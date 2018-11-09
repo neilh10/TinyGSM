@@ -10,7 +10,7 @@
 #define TinyGsmClientXBee_h
 //#pragma message("TinyGSM:  TinyGsmClientXBee")
 
-//#define TINY_GSM_DEBUG Serial
+#define TINY_GSM_DEBUG Serial
 
 // XBee's do not support multi-plexing in transparent/command mode
 // The much more complicated API mode is needed for multi-plexing
@@ -242,6 +242,7 @@ public:
   TinyGsmXBee(Stream& stream)
     : TinyGsmModem(stream), stream(stream)
   {
+      strIP.reserve(16); //ASCII Internet Protocol Number
       beeType = XBEE_UNKNOWN;  // Start not knowing what kind of bee it is
       guardTime = TINY_GSM_XBEE_GUARD_TIME;  // Start with the default guard time of 1 second
       memset(sockets, 0, sizeof(sockets));
@@ -384,7 +385,13 @@ public:
    */
 
   bool restart() {
-    if (!commandMode()) return false;  // Return immediately
+
+    if (!commandMode()) {
+      DBG(GF("XBEE restart failed"));
+      return false;  // Return immediately
+    } else {
+      DBG(GF("XBEE restart"));
+    }
     if (beeType == XBEE_UNKNOWN) getSeries();  // how we restart depends on this
 
     if (beeType != XBEE_S6B_WIFI) {
@@ -715,27 +722,41 @@ public:
    */
 
 protected:
+  bool gotIP = false;
+  String strIP;
 
   bool modemConnect(const char* host, uint16_t port, uint8_t mux = 0, bool ssl = false) {
-    String strIP; strIP.reserve(16);
+    //bool gotIP = false;
     unsigned long startMillis = millis();
-    bool gotIP = false;
+    //String strIP; strIP.reserve(16);
+    int8_t dnsLookUpRetrys=15;
+
     // XBee's require a numeric IP address for connection, but do provide the
     // functionality to look up the IP address from a fully qualified domain name
-    while (!gotIP && millis() - startMillis < 45000L)  // the lookup can take a while
+    while (((millis() - startMillis) < 45000L) && dnsLookUpRetrys && !gotIP)  // the lookup can take a while
     {
       sendAT(GF("LA"), host);
-      while (stream.available() < 4 && millis() - startMillis < 45000L) {};  // wait for any response
+      while (stream.available() < 4 && ((millis() - startMillis) < 45000L)) {};  // wait for any response
       strIP = stream.readStringUntil('\r');  // read result
       strIP.trim();
       if (!strIP.endsWith(GF("ERROR"))) gotIP = true;
       delay(100);  // short wait before trying again
+      dnsLookUpRetrys--; // If retrys is within time limit could reset()
+      if (!dnsLookUpRetrys) {
+        DBG(GF("DNS failed very fast."));
+        gotIP = false;
+        restart();
+      }
     }
     if (gotIP) {  // No reason to continue if we don't know the IP address
       IPAddress ip = TinyGsmIpFromString(strIP);
-      return modemConnect(ip, port, mux, ssl);
-    }
-    else return false;
+      if (modemConnect(ip, port, mux, ssl)) return true;
+      else {
+        gotIP = false; //Force a DNS lookup next attempt
+        DBG(GF("ip connect fail, try DNS lookup next time."));
+      }
+    } 
+    return false;
   }
 
   bool modemConnect(IPAddress ip, uint16_t port, uint8_t mux = 0, bool ssl = false) {
