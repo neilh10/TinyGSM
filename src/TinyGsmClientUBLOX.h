@@ -65,7 +65,7 @@ public:
 
 public:
   virtual int connect(const char *host, uint16_t port) {
-    stop();
+    if (sock_connected) stop();
     TINY_GSM_YIELD();
     rx.clear();
     sock_connected = at->modemConnect(host, port, &mux);
@@ -201,6 +201,7 @@ public:
     : TinyGsmModem(stream), stream(stream)
   {
     memset(sockets, 0, sizeof(sockets));
+    isCatM_NBIoT = false;
   }
 
   /*
@@ -215,7 +216,19 @@ public:
     if (waitResponse() != 1) {
       return false;
     }
-    DBG(GF("### Modem:"), getModemName());
+
+#ifdef TINY_GSM_DEBUG
+    sendAT(GF("+CMEE=2"));  // turn on verbose error codes
+#else
+    sendAT(GF("+CMEE=0"));  // turn off error codes
+#endif
+    waitResponse();
+
+    String name = getModemName();
+    DBG(GF("### Modem:"), name);
+    if (name.startsWith("u-blox SARA-R") or name.startsWith("u-blox SARA-N")) {
+      isCatM_NBIoT = true;
+    }
     int ret = getSimStatus();
     if (ret != SIM_READY && pin != NULL && strlen(pin) > 0) {
       simUnlock(pin);
@@ -230,7 +243,6 @@ public:
       return "u-blox Cellular Modem";
     }
     res1.replace(GSM_NL "OK" GSM_NL, "");
-    res1.replace(GSM_NL, " ");
     res1.trim();
 
     sendAT(GF("+GMM"));
@@ -239,7 +251,6 @@ public:
       return "u-blox Cellular Modem";
     }
     res2.replace(GSM_NL "OK" GSM_NL, "");
-    res2.replace(GSM_NL, " ");
     res2.trim();
 
     return res1 + String(' ') + res2;
@@ -422,7 +433,11 @@ public:
 
   bool isNetworkConnected() {
     RegStatus s = getRegistrationStatus();
-    return (s == REG_OK_HOME || s == REG_OK_ROAMING);
+    if (s == REG_OK_HOME || s == REG_OK_ROAMING)
+      return true;
+    else if (s == REG_UNKNOWN)  // for some reason, it can hang at unknown..
+      return isGprsConnected();
+    else return false;
   }
 
   /*
@@ -431,47 +446,87 @@ public:
   bool gprsConnect(const char* apn, const char* user = NULL, const char* pwd = NULL) {
     gprsDisconnect();
 
-    sendAT(GF("+CGATT=1"));
-    if (waitResponse(60000L) != 1) {
+    sendAT(GF("+CGATT=1"));  // attach to GPRS
+    if (waitResponse(360000L) != 1) {
       return false;
     }
 
-    sendAT(GF("+UPSD=0,1,\""), apn, '"');
-    waitResponse();
+    // Using CGDCONT sets up an "external" PCP context, i.e. a data connection
+    // using the external IP stack (e.g. Windows dial up) and PPP link over the
+    // serial interface.  This is the only command set supported by the LTE-M
+    // and LTE NB-IoT modules (SARA-R4x, SARA-N4X, SARA-N2x)
 
-    if (user && strlen(user) > 0) {
-      sendAT(GF("+UPSD=0,2,\""), user, '"');
+    // Setting up the PSD profile/PDP context with the UPSD commands sets up an
+    // "internal" PDP context, i.e. a data connection using the internal IP
+    // stack and related AT commands for sockets. This is what we're using for
+    // all of the other modules.
+
+    if (isCatM_NBIoT) {
+      if (user && strlen(user) > 0) {
+        sendAT(GF("+CGAUTH=1,0,\""), user, GF("\",\""), pwd, '"');  // Set the authentication
+        waitResponse();
+      }
+
+      sendAT(GF("+CGDCONT=1,\"IP\",\""), apn, '"');  // Define the PDP context
       waitResponse();
+
+      sendAT(GF("+CGACT=1,1"));  // activate PDP profile/context 1
+      if (waitResponse(150000L) != 1) {
+        return false;
+      }
+
+      return true;
     }
-    if (pwd && strlen(pwd) > 0) {
-      sendAT(GF("+UPSD=0,3,\""), pwd, '"');
+
+    else {
+      sendAT(GF("+UPSD=0,1,\""), apn, '"');  // Set APN for PSD profile 0
       waitResponse();
-    }
 
-    sendAT(GF("+UPSD=0,7,\"0.0.0.0\"")); // Dynamic IP
-    waitResponse();
+      if (user && strlen(user) > 0) {
+        sendAT(GF("+UPSD=0,2,\""), user, '"');  // Set user for PSD profile 0
+        waitResponse();
+      }
+      if (pwd && strlen(pwd) > 0) {
+        sendAT(GF("+UPSD=0,3,\""), pwd, '"');  // Set password for PSD profile 0
+        waitResponse();
+      }
 
-    sendAT(GF("+UPSDA=0,3"));
-    if (waitResponse(60000L) != 1) {
-      return false;
-    }
+      sendAT(GF("+UPSD=0,7,\"0.0.0.0\"")); // Dynamic IP on PSD profile 0
+      waitResponse();
 
-    // Open a GPRS context
-    sendAT(GF("+UPSND=0,8"));
-    if (waitResponse(GF(",8,1")) != 1) {
-      return false;
+      sendAT(GF("+UPSDA=0,3")); // Activate the PDP context associated with profile 0
+      if (waitResponse(360000L) != 1) {
+        return false;
+      }
+
+      sendAT(GF("+UPSND=0,8")); // Activate PSD profile 0
+      if (waitResponse(GF(",8,1")) != 1) {
+        return false;
+      }
+      waitResponse();
+
+      return true;
     }
-    waitResponse();
-    return true;
   }
 
   bool gprsDisconnect() {
-    sendAT(GF("+UPSDA=0,4"));
-    if (waitResponse(60000L) != 1)
-      return false;
 
-    sendAT(GF("+CGATT=0"));
-    if (waitResponse(60000L) != 1)
+    // LTE-M and NB-IoT modules do not support UPSx commands
+    if (isCatM_NBIoT) {
+      sendAT(GF("+CGACT=1,0"));  // Deactivate PDP context 0
+      if (waitResponse(40000L) != 1) {
+        return false;
+      }
+    }
+
+    else {
+      sendAT(GF("+UPSDA=0,4"));  // Deactivate the PDP context associated with profile 0
+      if (waitResponse(360000L) != 1)
+        return false;
+    }
+
+    sendAT(GF("+CGATT=0"));  // detach from GPRS
+    if (waitResponse(360000L) != 1)
       return false;
 
     return true;
@@ -495,17 +550,32 @@ public:
    */
 
   String getLocalIP() {
-    sendAT(GF("+UPSND=0,0"));
-    if (waitResponse(GF(GSM_NL "+UPSND:")) != 1) {
-      return "";
+    // LTE-M and NB-IoT modules do not support UPSx commands
+    if (isCatM_NBIoT) {
+      sendAT(GF("+CGPADDR"));
+      if (waitResponse(GF(GSM_NL "+CGPADDR:")) != 1) {
+        return "";
+      }
+      streamSkipUntil(',');  // Skip context id
+      String res = stream.readStringUntil('\r');
+      if (waitResponse() != 1) {
+        return "";
+      }
+      return res;
     }
-    streamSkipUntil(',');  // Skip PSD profile
-    streamSkipUntil('\"'); // Skip request type
-    String res = stream.readStringUntil('\"');
-    if (waitResponse() != 1) {
-      return "";
+    else {
+      sendAT(GF("+UPSND=0,0"));
+      if (waitResponse(GF(GSM_NL "+UPSND:")) != 1) {
+        return "";
+      }
+      streamSkipUntil(',');  // Skip PSD profile
+      streamSkipUntil('\"'); // Skip request type
+      String res = stream.readStringUntil('\"');
+      if (waitResponse() != 1) {
+        return "";
+      }
+      return res;
     }
-    return res;
   }
 
   /*
@@ -768,6 +838,7 @@ public:
 
 protected:
   GsmClient*    sockets[TINY_GSM_MUX_COUNT];
+  bool          isCatM_NBIoT;
 };
 
 #endif
