@@ -267,7 +267,7 @@ public:
       if (isNetworkConnected()) {
         return true;
       }
-      delay(250);
+      delay(2000);
     }
     return false;
   }

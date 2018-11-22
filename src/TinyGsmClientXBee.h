@@ -593,7 +593,7 @@ public:
       if (isNetworkConnected()) {
         return true;
       }
-      // delay(250);  // Enough delay going in and out of command mode
+      delay(1000);  //nh need- Enough delay going in and out of command mode
     }
     return false;
   }
