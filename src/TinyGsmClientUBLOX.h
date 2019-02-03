@@ -12,7 +12,7 @@
 
 //#define TINY_GSM_DEBUG Serial
 
-#define TINY_GSM_MUX_COUNT 5
+#define TINY_GSM_MUX_COUNT 7
 
 #include <TinyGsmCommon.h>
 
@@ -50,14 +50,15 @@ class GsmClient : public Client
 public:
   GsmClient() {}
 
-  GsmClient(TinyGsmUBLOX& modem, uint8_t mux = 1) {
+  GsmClient(TinyGsmUBLOX& modem, uint8_t mux = 0) {
     init(&modem, mux);
   }
 
-  bool init(TinyGsmUBLOX* modem, uint8_t mux = 1) {
+  bool init(TinyGsmUBLOX* modem, uint8_t mux = 0) {
     this->at = modem;
     this->mux = mux;
     sock_available = 0;
+    prev_check = 0;
     sock_connected = false;
     got_data = false;
     return true;
@@ -65,11 +66,24 @@ public:
 
 public:
   virtual int connect(const char *host, uint16_t port) {
-    if (sock_connected) stop();
+    if (sock_connected) {
+      stop();
+      // If we're creating a new connection on the same client, we need to wait
+      // until the async close has finished on Cat-M modems.
+      // After close has completed, the +UUSOCL should appear.
+      if (at->isCatM) {
+        DBG("Waiting for +UUSOCL URC on", mux);
+        for (unsigned long start = millis(); millis() - start < 120000L; ) {
+          at->maintain();
+          if (!sock_connected) break;
+        }
+      }
+    }
     TINY_GSM_YIELD();
     rx.clear();
     sock_connected = at->modemConnect(host, port, &mux);
     at->sockets[mux] = this;
+    at->maintain();
     return sock_connected;
   }
 
@@ -87,10 +101,22 @@ public:
 
   virtual void stop() {
     TINY_GSM_YIELD();
-    at->sendAT(GF("+USOCL="), mux);
-    sock_connected = false;
-    at->waitResponse();
+    // Read and dump anything remaining in the modem's internal buffer.
+    // The socket will appear open in response to connected() even after it
+    // closes until all data is read from the buffer.
+    // Doing it this way allows the external mcu to find and get all of the data
+    // that it wants from the socket even if it was closed externally.
     rx.clear();
+    at->maintain();
+    while (sock_available > 0) {
+      sock_available -= at->modemRead(TinyGsmMin((uint16_t)rx.free(), sock_available), mux);
+      rx.clear();
+      at->maintain();
+    }
+    at->modemDisconnect(mux);
+    // We don't actually know if the CatM modem has finished closing because
+    // we're using an "asynchronous" close
+    if (!at->isCatM) sock_connected = false;
   }
 
   virtual size_t write(const uint8_t *buf, size_t size) {
@@ -111,6 +137,13 @@ public:
   virtual int available() {
     TINY_GSM_YIELD();
     if (!rx.size()) {
+      // Workaround: sometimes SARA R410 forgets to notify about data arrival.
+      // TODO: Currently we ping the module periodically,
+      // but maybe there's a better indicator that we need to poll
+      if (millis() - prev_check > 250) {
+        got_data = true;
+        prev_check = millis();
+      }
       at->maintain();
     }
     return rx.size() + sock_available;
@@ -128,8 +161,15 @@ public:
         cnt += chunk;
         continue;
       }
-      // TODO: Read directly into user buffer?
+      // Workaround: sometimes SARA R410 forgets to notify about data arrival.
+      // TODO: Currently we ping the module periodically,
+      // but maybe there's a better indicator that we need to poll
+      if (millis() - prev_check > 250) {
+        got_data = true;
+        prev_check = millis();
+      }
       at->maintain();
+      // TODO: Read directly into user buffer?
       if (sock_available > 0) {
         sock_available -= at->modemRead(TinyGsmMin((uint16_t)rx.free(), sock_available), mux);
       } else {
@@ -168,6 +208,7 @@ private:
   TinyGsmUBLOX* at;
   uint8_t       mux;
   uint16_t      sock_available;
+  uint32_t      prev_check;
   bool          sock_connected;
   bool          got_data;
   RxFifo        rx;
@@ -190,6 +231,7 @@ public:
     rx.clear();
     sock_connected = at->modemConnect(host, port, &mux, true);
     at->sockets[mux] = this;
+    at->maintain();
     return sock_connected;
   }
 };
@@ -201,7 +243,7 @@ public:
     : TinyGsmModem(stream), stream(stream)
   {
     memset(sockets, 0, sizeof(sockets));
-    isCatM_NBIoT = false;
+    isCatM = false;  // For SARA R4 and N4 series
   }
 
   /*
@@ -226,8 +268,11 @@ public:
 
     String name = getModemName();
     DBG(GF("### Modem:"), name);
-    if (name.startsWith("u-blox SARA-R") or name.startsWith("u-blox SARA-N")) {
-      isCatM_NBIoT = true;
+    if (name.startsWith("u-blox SARA-R4") or name.startsWith("u-blox SARA-N4")) {
+      isCatM = true;
+    }
+    else if (name.startsWith("u-blox SARA-N2")) {
+      DBG(GF("### SARA N2 NB-IoT modems not supported!"), name);
     }
     int ret = getSimStatus();
     if (ret != SIM_READY && pin != NULL && strlen(pin) > 0) {
@@ -278,15 +323,18 @@ public:
       }
     }
     while (stream.available()) {
-      waitResponse(10, NULL, NULL);
+      waitResponse(15, NULL, NULL);
     }
   }
 
   bool factoryDefault() {
-    sendAT(GF("+UFACTORY=0,1"));  // Factory + Reset + Echo Off
-    waitResponse();
-    sendAT(GF("+CFUN=16"));   // Auto-baud
-    return waitResponse() == 1;
+    if (!isCatM) {
+      sendAT(GF("+UFACTORY=0,1"));  // Factory + Reset + Echo Off
+      waitResponse();
+      sendAT(GF("+CFUN=16"));   // Auto-baud
+      return waitResponse() == 1;
+    }
+    else return false;
   }
 
   String getModemInfo() {
@@ -421,7 +469,7 @@ public:
    * Generic network functions
    */
 
-  int getSignalQuality() {
+  int16_t getSignalQuality() {
     sendAT(GF("+CSQ"));
     if (waitResponse(GF(GSM_NL "+CSQ:")) != 1) {
       return 99;
@@ -461,13 +509,13 @@ public:
     // stack and related AT commands for sockets. This is what we're using for
     // all of the other modules.
 
-    if (isCatM_NBIoT) {
+    if (isCatM) {
       if (user && strlen(user) > 0) {
         sendAT(GF("+CGAUTH=1,0,\""), user, GF("\",\""), pwd, '"');  // Set the authentication
         waitResponse();
       }
 
-      sendAT(GF("+CGDCONT=1,\"IP\",\""), apn, '"');  // Define the PDP context
+      sendAT(GF("+CGDCONT=1,\"IP\",\""), apn, '"');  // Define PDP context 1
       waitResponse();
 
       sendAT(GF("+CGACT=1,1"));  // activate PDP profile/context 1
@@ -512,8 +560,8 @@ public:
   bool gprsDisconnect() {
 
     // LTE-M and NB-IoT modules do not support UPSx commands
-    if (isCatM_NBIoT) {
-      sendAT(GF("+CGACT=1,0"));  // Deactivate PDP context 0
+    if (isCatM) {
+      sendAT(GF("+CGACT=1,0"));  // Deactivate PDP context 1
       if (waitResponse(40000L) != 1) {
         return false;
       }
@@ -551,7 +599,7 @@ public:
 
   String getLocalIP() {
     // LTE-M and NB-IoT modules do not support UPSx commands
-    if (isCatM_NBIoT) {
+    if (isCatM) {
       sendAT(GF("+CGPADDR"));
       if (waitResponse(GF(GSM_NL "+CGPADDR:")) != 1) {
         return "";
@@ -634,7 +682,7 @@ public:
    */
   uint16_t getBattVoltage() TINY_GSM_ATTR_NOT_AVAILABLE;
 
-  int getBattPercent() {
+  int8_t getBattPercent() {
     sendAT(GF("+CIND?"));
     if (waitResponse(GF(GSM_NL "+CIND:")) != 1) {
       return 0;
@@ -672,12 +720,28 @@ protected:
     //sendAT(GF("+USOSO="), *mux, GF(",6,2,30000"));
     //waitResponse();
 
-    sendAT(GF("+USOCO="), *mux, ",\"", host, "\",", port);  // connect on socket
-    int rsp = waitResponse(75000L);
+    // connect on the allocated socket
+    // TODO:  Use faster "asynchronous" connection?
+    // We would have to wait for the +UUSOCO URC to verify connection
+    sendAT(GF("+USOCO="), *mux, ",\"", host, "\",", port);
+    int rsp = waitResponse(120000L);
     return (1 == rsp);
   }
 
-  int modemSend(const void* buff, size_t len, uint8_t mux) {
+  bool modemDisconnect(uint8_t mux) {
+    TINY_GSM_YIELD();
+    if (isCatM) {  //  These modems allow a faster "asynchronous" close
+      sendAT(GF("+USOCL="), mux, GF(",1"));
+      int rsp = waitResponse(120000L);
+      return (1 == rsp);  // but it still can take up to 120s to get a response
+    }
+    else {  // no async close
+      sendAT(GF("+USOCL="), mux);
+      return (1 == waitResponse());
+    }
+  }
+
+  int16_t modemSend(const void* buff, size_t len, uint8_t mux) {
     sendAT(GF("+USOWR="), mux, ',', len);
     if (waitResponse(GF("@")) != 1) {
       return 0;
@@ -692,6 +756,7 @@ protected:
     streamSkipUntil(','); // Skip mux
     int sent = stream.readStringUntil('\n').toInt();
     waitResponse();
+    maintain();  // look for a very quick response
     return sent;
   }
 
@@ -717,12 +782,15 @@ protected:
   size_t modemGetAvailable(uint8_t mux) {
     sendAT(GF("+USORD="), mux, ",0");
     size_t result = 0;
-    if (waitResponse(GF(GSM_NL "+USORD:")) == 1) {
+    uint8_t res = waitResponse(GF(GSM_NL "+USORD:"));
+    // Will give error "operation not allowed" when attempting to read a socket
+    // that you have already told to close
+    if (res == 1) {
       streamSkipUntil(','); // Skip mux
       result = stream.readStringUntil('\n').toInt();
       waitResponse();
     }
-    if (!result) {
+    if (!result && res != 2 && res != 3) {  // Don't check modemGetConnected after an error
       sockets[mux]->sock_connected = modemGetConnected(mux);
     }
     return result;
@@ -730,14 +798,27 @@ protected:
 
   bool modemGetConnected(uint8_t mux) {
     sendAT(GF("+USOCTL="), mux, ",10");
-    if (waitResponse(GF(GSM_NL "+USOCTL:")) != 1)
+    uint8_t res = waitResponse(GF(GSM_NL "+USOCTL:"));
+    if (res != 1)
       return false;
 
     streamSkipUntil(','); // Skip mux
     streamSkipUntil(','); // Skip type
     int result = stream.readStringUntil('\n').toInt();
+    // 0: the socket is in INACTIVE status (it corresponds to CLOSED status
+    // defined in RFC793 "TCP Protocol Specification" [112])
+    // 1: the socket is in LISTEN status
+    // 2: the socket is in SYN_SENT status
+    // 3: the socket is in SYN_RCVD status
+    // 4: the socket is in ESTABILISHED status
+    // 5: the socket is in FIN_WAIT_1 status
+    // 6: the socket is in FIN_WAIT_2 status
+    // 7: the sokcet is in CLOSE_WAIT status
+    // 8: the socket is in CLOSING status
+    // 9: the socket is in LAST_ACK status
+    // 10: the socket is in TIME_WAIT status
     waitResponse();
-    return result != 0;
+    return (result != 0);
   }
 
 public:
@@ -838,7 +919,7 @@ public:
 
 protected:
   GsmClient*    sockets[TINY_GSM_MUX_COUNT];
-  bool          isCatM_NBIoT;
+  bool          isCatM;
 };
 
 #endif

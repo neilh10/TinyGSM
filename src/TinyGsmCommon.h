@@ -258,7 +258,7 @@ public:
   * Generic network functions
   */
 
-  virtual int getSignalQuality() = 0;
+  virtual int16_t getSignalQuality() = 0;
   // NOTE:  this returns whether the modem is registered on the cellular or WiFi
   // network NOT whether GPRS or other internet connections are available
   virtual bool isNetworkConnected() = 0;
@@ -267,7 +267,7 @@ public:
       if (isNetworkConnected()) {
         return true;
       }
-      delay(2000);
+      delay(250);
     }
     return false;
   }

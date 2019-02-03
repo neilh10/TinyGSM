@@ -645,7 +645,7 @@ public:
       if (isNetworkConnected()) {
         return true;
       }
-      delay(1000);  //nh need- Enough delay going in and out of command mode
+      delay(250);  // per Neil H. - more stable with delay
     }
     return false;
   }
