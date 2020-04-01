@@ -46,29 +46,37 @@
 // Chips without internal buffering (A6/A7, ESP8266, M590)
 // need enough space in the buffer for the entire response
 // else data will be lost (and the http library will fail).
+#if !defined(TINY_GSM_RX_BUFFER)
 #define TINY_GSM_RX_BUFFER 650
+#endif
 
 // See all AT commands, if wanted
-//#define DUMP_AT_COMMANDS
+// #define DUMP_AT_COMMANDS
 
 // Define the serial console for debug prints, if needed
 #define TINY_GSM_DEBUG SerialMon
-//#define LOGGING  // <- Logging is for the HTTP library
+// #define LOGGING  // <- Logging is for the HTTP library
 
-// Add a reception delay, if needed
-//#define TINY_GSM_YIELD() { delay(2); }
+// Range to attempt to autobaud
+#define GSM_AUTOBAUD_MIN 9600
+#define GSM_AUTOBAUD_MAX 115200
 
+// Add a reception delay - may be needed for a fast processor at a slow baud rate
+// #define TINY_GSM_YIELD() { delay(2); }
+
+// Define how you're planning to connect to the internet
 #define TINY_GSM_USE_GPRS true
 #define TINY_GSM_USE_WIFI false
 
 // set GSM PIN, if any
 #define GSM_PIN ""
 
-// Your GPRS credentials
-// Leave empty, if missing user or pass
+// Your GPRS credentials, if any
 const char apn[]  = "YourAPN";
 const char gprsUser[] = "";
 const char gprsPass[] = "";
+
+// Your WiFi connection credentials, if applicable
 const char wifiSSID[]  = "YourSSID";
 const char wifiPass[] = "YourWiFiPass";
 
@@ -79,6 +87,20 @@ const int  port = 443;
 
 #include <TinyGsmClient.h>
 #include <ArduinoHttpClient.h>
+
+// Just in case someone defined the wrong thing..
+#if TINY_GSM_USE_GPRS && not defined TINY_GSM_MODEM_HAS_GPRS
+#undef TINY_GSM_USE_GPRS
+#undef TINY_GSM_USE_WIFI
+#define TINY_GSM_USE_GPRS false
+#define TINY_GSM_USE_WIFI true
+#endif
+#if TINY_GSM_USE_WIFI && not defined TINY_GSM_MODEM_HAS_WIFI
+#undef TINY_GSM_USE_GPRS
+#undef TINY_GSM_USE_WIFI
+#define TINY_GSM_USE_GPRS true
+#define TINY_GSM_USE_WIFI false
+#endif
 
 #ifdef DUMP_AT_COMMANDS
   #include <StreamDebugger.h>
@@ -103,7 +125,8 @@ void setup() {
   SerialMon.println("Wait...");
 
   // Set GSM module baud rate
-  SerialAT.begin(115200);
+  // TinyGsmAutoBaud(SerialAT,GSM_AUTOBAUD_MIN,GSM_AUTOBAUD_MAX);
+  SerialAT.begin(9600);
   delay(3000);
 
   // Restart takes quite some time
@@ -113,7 +136,7 @@ void setup() {
   // modem.init();
 
   String modemInfo = modem.getModemInfo();
-  SerialMon.print("Modem: ");
+  SerialMon.print("Modem Info: ");
   SerialMon.println(modemInfo);
 
 #if TINY_GSM_USE_GPRS
@@ -122,16 +145,12 @@ void setup() {
     modem.simUnlock(GSM_PIN);
   }
 #endif
-
-  if (!modem.hasSSL()) {
-    SerialMon.println(F("SSL is not supported by this modem"));
-    while(true) { delay(1000); }
-  }
 }
 
 void loop() {
 
-#if defined TINY_GSM_USE_WIFI && defined TINY_GSM_MODEM_HAS_WIFI
+#if TINY_GSM_USE_WIFI
+  // Wifi connection parameters must be set before waiting for the network
   SerialMon.print(F("Setting SSID/password..."));
   if (!modem.networkConnect(wifiSSID, wifiPass)) {
     SerialMon.println(" fail");
@@ -158,7 +177,8 @@ void loop() {
     SerialMon.println("Network connected");
   }
 
-#if TINY_GSM_USE_GPRS && defined TINY_GSM_MODEM_HAS_GPRS
+#if TINY_GSM_USE_GPRS
+  // GPRS connection parameters are usually set after network registration
     SerialMon.print(F("Connecting to "));
     SerialMon.print(apn);
     if (!modem.gprsConnect(apn, gprsUser, gprsPass)) {
@@ -167,10 +187,14 @@ void loop() {
       return;
     }
     SerialMon.println(" success");
+
+    if (modem.isGprsConnected()) {
+      SerialMon.println("GPRS connected");
+    }
 #endif
 
   SerialMon.print(F("Performing HTTPS GET request... "));
-  http.connectionKeepAlive(); // Currently, this is needed for HTTPS
+    http.connectionKeepAlive();  // Currently, this is needed for HTTPS
   int err = http.get(resource);
   if (err != 0) {
     SerialMon.println(F("failed to connect"));

@@ -20,6 +20,7 @@
 // #define TINY_GSM_MODEM_SIM900
 // #define TINY_GSM_MODEM_SIM7000
 // #define TINY_GSM_MODEM_SIM5360
+// #define TINY_GSM_MODEM_SIM7600
 // #define TINY_GSM_MODEM_UBLOX
 // #define TINY_GSM_MODEM_SARAR4
 // #define TINY_GSM_MODEM_M95
@@ -48,29 +49,33 @@
 // Chips without internal buffering (A6/A7, ESP8266, M590)
 // need enough space in the buffer for the entire response
 // else data will be lost (and the http library will fail).
+#if !defined(TINY_GSM_RX_BUFFER)
 #define TINY_GSM_RX_BUFFER 1024
+#endif
 
 // See all AT commands, if wanted
-//#define DUMP_AT_COMMANDS
+// #define DUMP_AT_COMMANDS
 
 // Define the serial console for debug prints, if needed
 #define TINY_GSM_DEBUG SerialMon
-//#define LOGGING  // <- Logging is for the HTTP library
+// #define LOGGING  // <- Logging is for the HTTP library
 
-// Add a reception delay, if needed
-//#define TINY_GSM_YIELD() { delay(2); }
+// Add a reception delay - may be needed for a fast processor at a slow baud rate
+// #define TINY_GSM_YIELD() { delay(2); }
 
+// Define how you're planning to connect to the internet
 #define TINY_GSM_USE_GPRS true
 #define TINY_GSM_USE_WIFI false
 
 // set GSM PIN, if any
 #define GSM_PIN ""
 
-// Your GPRS credentials
-// Leave empty, if missing user or pass
+// Your GPRS credentials, if any
 const char apn[]  = "YourAPN";
 const char gprsUser[] = "";
 const char gprsPass[] = "";
+
+// Your WiFi connection credentials, if applicable
 const char wifiSSID[]  = "YourSSID";
 const char wifiPass[] = "YourWiFiPass";
 
@@ -80,6 +85,20 @@ const int  port = 80;
 
 #include <TinyGsmClient.h>
 #include <CRC32.h>
+
+// Just in case someone defined the wrong thing..
+#if TINY_GSM_USE_GPRS && not defined TINY_GSM_MODEM_HAS_GPRS
+#undef TINY_GSM_USE_GPRS
+#undef TINY_GSM_USE_WIFI
+#define TINY_GSM_USE_GPRS false
+#define TINY_GSM_USE_WIFI true
+#endif
+#if TINY_GSM_USE_WIFI && not defined TINY_GSM_MODEM_HAS_WIFI
+#undef TINY_GSM_USE_GPRS
+#undef TINY_GSM_USE_WIFI
+#define TINY_GSM_USE_GPRS true
+#define TINY_GSM_USE_WIFI false
+#endif
 
 const char resource[]  = "/TinyGSM/test_1k.bin";
 uint32_t knownCRC32    = 0x6f50d767;
@@ -100,6 +119,12 @@ void setup() {
   SerialMon.begin(115200);
   delay(10);
 
+  // !!!!!!!!!!!
+  // Set your reset, enable, power pins here
+  // !!!!!!!!!!!
+
+  SerialMon.println("Wait...");
+
   // Set GSM module baud rate
   SerialAT.begin(115200);
   delay(3000);
@@ -108,9 +133,10 @@ void setup() {
   // To skip it, call init() instead of restart()
   SerialMon.println("Initializing modem...");
   modem.restart();
+  // modem.init();
 
   String modemInfo = modem.getModemInfo();
-  SerialMon.print("Modem: ");
+  SerialMon.print("Modem Info: ");
   SerialMon.println(modemInfo);
 
 #if TINY_GSM_USE_GPRS
@@ -134,7 +160,8 @@ void printPercent(uint32_t readLength, uint32_t contentLength) {
 
 void loop() {
 
-#if defined TINY_GSM_USE_WIFI && defined TINY_GSM_MODEM_HAS_WIFI
+#if TINY_GSM_USE_WIFI
+  // Wifi connection parameters must be set before waiting for the network
   SerialMon.print(F("Setting SSID/password..."));
   if (!modem.networkConnect(wifiSSID, wifiPass)) {
     SerialMon.println(" fail");
@@ -161,7 +188,8 @@ void loop() {
     SerialMon.println("Network connected");
   }
 
-#if TINY_GSM_USE_GPRS && defined TINY_GSM_MODEM_HAS_GPRS
+#if TINY_GSM_USE_GPRS
+  // GPRS connection parameters are usually set after network registration
   SerialMon.print(F("Connecting to "));
   SerialMon.print(apn);
   if (!modem.gprsConnect(apn, gprsUser, gprsPass)) {
@@ -170,6 +198,10 @@ void loop() {
     return;
   }
   SerialMon.println(" success");
+
+  if (modem.isGprsConnected()) {
+    SerialMon.println("GPRS connected");
+  }
 #endif
 
   SerialMon.print(F("Connecting to "));
@@ -187,7 +219,7 @@ void loop() {
   client.print("Connection: close\r\n\r\n");
 
   // Let's see what the entire elapsed time is, from after we send the request.
-  unsigned long timeElapsed = millis();
+  uint32_t timeElapsed = millis();
 
   SerialMon.println(F("Waiting for response header"));
 
@@ -216,7 +248,7 @@ void loop() {
         // SerialMon.print(c, HEX);
         // SerialMon.print(' ');
         // if (isprint(c))
-        //   SerialMon.print((char) c);
+        //   SerialMon.print(reinterpret_cast<char> c);
         // else
         //   SerialMon.print('*');
         // SerialMon.print(' ');
@@ -271,7 +303,7 @@ void loop() {
     while (readLength < contentLength && client.connected() && millis() - clientReadStartTime < clientReadTimeout) {
       while (client.available()) {
         uint8_t c = client.read();
-        //SerialMon.print((char)c);       // Uncomment this to show data
+        //SerialMon.print(reinterpret_cast<char>c);  // Uncomment this to show data
         crc.update(c);
         readLength++;
         if (readLength % (contentLength / 13) == 0) {
@@ -291,8 +323,14 @@ void loop() {
   client.stop();
   SerialMon.println(F("Server disconnected"));
 
+#if TINY_GSM_USE_WIFI
+  modem.networkDisconnect();
+  SerialMon.println(F("WiFi disconnected"));
+#endif
+#if TINY_GSM_USE_GPRS
   modem.gprsDisconnect();
   SerialMon.println(F("GPRS disconnected"));
+#endif
 
   float duration = float(timeElapsed) / 1000;
 
