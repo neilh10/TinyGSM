@@ -470,7 +470,7 @@ class TinyGsmXBee : public TinyGsmModem<TinyGsmXBee>,
       case XBEE_3G: return "Digi XBee Cellular 3G";
       case XBEE3_LTE1_ATT: return "Digi XBee3 Cellular LTE CAT 1";
       case XBEE3_LTEM_ATT: return "Digi XBee3 Cellular LTE-M";
-      default: return "Digi XBee";
+      default: return "Digi XBee Unknown";
     }
   }
 
@@ -1061,6 +1061,10 @@ class TinyGsmXBee : public TinyGsmModem<TinyGsmXBee>,
     }
 
     // we'll accept either unknown or connected
+    if (XBEE_UNKNOWN == beeType ) {
+      getSeries(); 
+      DBG("BeeType modemConnect refresh",XBEE_S6B_WIFI,"=", beeType);
+    }
     if (beeType != XBEE_S6B_WIFI) {
       uint16_t ci = getConnectionIndicator();
       success &= (ci == 0x00 || ci == 0xFF || ci == 0x28);
@@ -1401,8 +1405,17 @@ class TinyGsmXBee : public TinyGsmModem<TinyGsmXBee>,
   void getSeries(void) {
     sendAT(GF("HS"));  // Get the "Hardware Series";
     int16_t intRes = readResponseInt();
+    // if no response from module, then try again 
+    if (0xff == intRes) {
+      sendAT(GF("HS"));  // Get the "Hardware Series";
+      intRes = readResponseInt();
+      if (0xff == intRes) {
+        //Still no response, leave a known value - should reset
+        intRes = XBEE_UNKNOWN;
+        }
+    }
     beeType        = (XBeeType)intRes;
-    DBG(GF("### Modem: "), getModemName());
+    DBG(GF("### Modem: "), getModemName(), beeType);
   }
 
   String readResponseString(uint32_t timeout_ms = 1000) {
