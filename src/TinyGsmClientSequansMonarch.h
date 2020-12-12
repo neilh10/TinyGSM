@@ -28,6 +28,7 @@ static const char GSM_OK[] TINY_GSM_PROGMEM    = "OK" GSM_NL;
 static const char GSM_ERROR[] TINY_GSM_PROGMEM = "ERROR" GSM_NL;
 #if defined       TINY_GSM_DEBUG
 static const char GSM_CME_ERROR[] TINY_GSM_PROGMEM = GSM_NL "+CME ERROR:";
+static const char GSM_CMS_ERROR[] TINY_GSM_PROGMEM = GSM_NL "+CMS ERROR:";
 #endif
 
 enum RegStatus {
@@ -315,6 +316,9 @@ class TinyGsmSequansMonarch
     return waitResponse() == 1;
   }
 
+  bool setPhoneFunctionality(uint8_t fun,
+                             bool reset = false) TINY_GSM_ATTR_NOT_IMPLEMENTED;
+
   /*
    * Generic network functions
    */
@@ -366,7 +370,11 @@ class TinyGsmSequansMonarch
   }
 
   bool gprsDisconnectImpl() {
+    // Detach from PS network
     sendAT(GF("+CGATT=0"));
+    if (waitResponse(60000L) != 1) { return false; }
+    // Dectivate all PDP contexts
+    sendAT(GF("+CGACT=0"));
     if (waitResponse(60000L) != 1) { return false; }
 
     return true;
@@ -588,9 +596,12 @@ class TinyGsmSequansMonarch
       // SOCK_LISTENING              = 4,
       // SOCK_INCOMING               = 5,
       // SOCK_OPENING                = 6,
-      sockets[muxNo % TINY_GSM_MUX_COUNT]->sock_connected =
-          ((status != SOCK_CLOSED) && (status != SOCK_INCOMING) &&
-           (status != SOCK_OPENING));
+      GsmClientSequansMonarch* sock = sockets[mux % TINY_GSM_MUX_COUNT];
+      if (sock) {
+        sock->sock_connected = ((status != SOCK_CLOSED) &&
+                                (status != SOCK_INCOMING) &&
+                                (status != SOCK_OPENING));
+      }
     }
     waitResponse();  // Should be an OK at the end
     return sockets[mux % TINY_GSM_MUX_COUNT]->sock_connected;
@@ -606,10 +617,11 @@ class TinyGsmSequansMonarch
                       GsmConstStr r2 = GFP(GSM_ERROR),
 #if defined TINY_GSM_DEBUG
                       GsmConstStr r3 = GFP(GSM_CME_ERROR),
+                      GsmConstStr r4 = GFP(GSM_CMS_ERROR),
 #else
-                      GsmConstStr r3 = NULL,
+                      GsmConstStr r3 = NULL, GsmConstStr r4 = NULL,
 #endif
-                      GsmConstStr r4 = NULL, GsmConstStr r5 = NULL) {
+                      GsmConstStr r5 = NULL) {
     /*String r1s(r1); r1s.trim();
     String r2s(r2); r2s.trim();
     String r3s(r3); r3s.trim();
@@ -682,10 +694,11 @@ class TinyGsmSequansMonarch
                       GsmConstStr r2 = GFP(GSM_ERROR),
 #if defined TINY_GSM_DEBUG
                       GsmConstStr r3 = GFP(GSM_CME_ERROR),
+                      GsmConstStr r4 = GFP(GSM_CMS_ERROR),
 #else
-                      GsmConstStr r3 = NULL,
+                      GsmConstStr r3 = NULL, GsmConstStr r4 = NULL,
 #endif
-                      GsmConstStr r4 = NULL, GsmConstStr r5 = NULL) {
+                      GsmConstStr r5 = NULL) {
     String data;
     return waitResponse(timeout_ms, data, r1, r2, r3, r4, r5);
   }
@@ -694,15 +707,18 @@ class TinyGsmSequansMonarch
                       GsmConstStr r2 = GFP(GSM_ERROR),
 #if defined TINY_GSM_DEBUG
                       GsmConstStr r3 = GFP(GSM_CME_ERROR),
+                      GsmConstStr r4 = GFP(GSM_CMS_ERROR),
 #else
-                      GsmConstStr r3 = NULL,
+                      GsmConstStr r3 = NULL, GsmConstStr r4 = NULL,
 #endif
-                      GsmConstStr r4 = NULL, GsmConstStr r5 = NULL) {
+                      GsmConstStr r5 = NULL) {
     return waitResponse(1000, r1, r2, r3, r4, r5);
   }
 
+ public:
+  Stream& stream;
+
  protected:
-  Stream&                  stream;
   GsmClientSequansMonarch* sockets[TINY_GSM_MUX_COUNT];
   const char*              gsmNL = GSM_NL;
 };

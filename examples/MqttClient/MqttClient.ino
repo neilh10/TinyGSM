@@ -177,9 +177,9 @@ void setup() {
   SerialMon.println("Wait...");
 
   // Set GSM module baud rate
-  // TinyGsmAutoBaud(SerialAT,GSM_AUTOBAUD_MIN,GSM_AUTOBAUD_MAX);
-  SerialAT.begin(9600);
-  delay(3000);
+  TinyGsmAutoBaud(SerialAT, GSM_AUTOBAUD_MIN, GSM_AUTOBAUD_MAX);
+  // SerialAT.begin(9600);
+  delay(6000);
 
   // Restart takes quite some time
   // To skip it, call init() instead of restart()

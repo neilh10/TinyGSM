@@ -31,6 +31,7 @@ static const char GSM_OK[] TINY_GSM_PROGMEM    = "OK" GSM_NL;
 static const char GSM_ERROR[] TINY_GSM_PROGMEM = "ERROR" GSM_NL;
 #if defined       TINY_GSM_DEBUG
 static const char GSM_CME_ERROR[] TINY_GSM_PROGMEM = GSM_NL "+CME ERROR:";
+static const char GSM_CMS_ERROR[] TINY_GSM_PROGMEM = GSM_NL "+CMS ERROR:";
 #endif
 
 enum RegStatus {
@@ -298,8 +299,7 @@ class TinyGsmSaraR4 : public TinyGsmModem<TinyGsmSaraR4>,
   // using +CFUN=15 instead of the more common CFUN=1,1
   bool restartImpl() {
     if (!testAT()) { return false; }
-    sendAT(GF("+CFUN=15"));
-    if (waitResponse(10000L) != 1) { return false; }
+    if (!setPhoneFunctionality(15)) { return false; }
     delay(3000);  // TODO(?):  Verify delay timing here
     return init();
   }
@@ -311,30 +311,25 @@ class TinyGsmSaraR4 : public TinyGsmModem<TinyGsmSaraR4>,
 
   bool sleepEnableImpl(bool enable = true) TINY_GSM_ATTR_NOT_AVAILABLE;
 
+  bool setPhoneFunctionalityImpl(uint8_t fun, bool reset = false) {
+    sendAT(GF("+CFUN="), fun, reset ? ",1" : "");
+    return waitResponse(10000L) == 1;
+  }
+
   /*
    * Generic network functions
    */
  public:
   RegStatus getRegistrationStatus() {
     // Check first for EPS registration
-    sendAT(GF("+CEREG?"));
-    if (waitResponse(GF(GSM_NL "+CEREG:")) != 1) { return REG_UNKNOWN; }
-    streamSkipUntil(','); /* Skip format (0) */
-    int status = streamGetIntBefore('\n');
-    waitResponse();
+    RegStatus epsStatus = (RegStatus)getRegistrationStatusXREG("CEREG");
 
     // If we're connected on EPS, great!
-    if ((RegStatus)status == REG_OK_HOME ||
-        (RegStatus)status == REG_OK_ROAMING) {
-      return (RegStatus)status;
+    if (epsStatus == REG_OK_HOME || epsStatus == REG_OK_ROAMING) {
+      return epsStatus;
     } else {
       // Otherwise, check generic network status
-      sendAT(GF("+CREG?"));
-      if (waitResponse(GF(GSM_NL "+CREG:")) != 1) { return REG_UNKNOWN; }
-      streamSkipUntil(','); /* Skip format (0) */
-      status = streamGetIntBefore('\n');
-      waitResponse();
-      return (RegStatus)status;
+      return (RegStatus)getRegistrationStatusXREG("CREG");
     }
   }
 
@@ -717,6 +712,7 @@ class TinyGsmSaraR4 : public TinyGsmModem<TinyGsmSaraR4>,
   }
 
   size_t modemRead(size_t size, uint8_t mux) {
+    if (!sockets[mux]) return 0;
     sendAT(GF("+USORD="), mux, ',', (uint16_t)size);
     if (waitResponse(GF(GSM_NL "+USORD:")) != 1) { return 0; }
     streamSkipUntil(',');  // Skip mux
@@ -732,6 +728,7 @@ class TinyGsmSaraR4 : public TinyGsmModem<TinyGsmSaraR4>,
   }
 
   size_t modemGetAvailable(uint8_t mux) {
+    if (!sockets[mux]) return 0;
     // NOTE:  Querying a closed socket gives an error "operation not allowed"
     sendAT(GF("+USORD="), mux, ",0");
     size_t  result = 0;
@@ -745,7 +742,7 @@ class TinyGsmSaraR4 : public TinyGsmModem<TinyGsmSaraR4>,
       waitResponse();
     }
     if (!result) { sockets[mux]->sock_connected = modemGetConnected(mux); }
-    // DBG("### AvailablE:", result, "on", mux);
+    // DBG("### Available:", result, "on", mux);
     return result;
   }
 
@@ -784,10 +781,11 @@ class TinyGsmSaraR4 : public TinyGsmModem<TinyGsmSaraR4>,
                       GsmConstStr r2 = GFP(GSM_ERROR),
 #if defined TINY_GSM_DEBUG
                       GsmConstStr r3 = GFP(GSM_CME_ERROR),
+                      GsmConstStr r4 = GFP(GSM_CMS_ERROR),
 #else
-                      GsmConstStr r3 = NULL,
+                      GsmConstStr r3 = NULL, GsmConstStr r4 = NULL,
 #endif
-                      GsmConstStr r4 = NULL, GsmConstStr r5 = NULL) {
+                      GsmConstStr r5 = NULL) {
     /*String r1s(r1); r1s.trim();
     String r2s(r2); r2s.trim();
     String r3s(r3); r3s.trim();
@@ -868,10 +866,11 @@ class TinyGsmSaraR4 : public TinyGsmModem<TinyGsmSaraR4>,
                       GsmConstStr r2 = GFP(GSM_ERROR),
 #if defined TINY_GSM_DEBUG
                       GsmConstStr r3 = GFP(GSM_CME_ERROR),
+                      GsmConstStr r4 = GFP(GSM_CMS_ERROR),
 #else
-                      GsmConstStr r3 = NULL,
+                      GsmConstStr r3 = NULL, GsmConstStr r4 = NULL,
 #endif
-                      GsmConstStr r4 = NULL, GsmConstStr r5 = NULL) {
+                      GsmConstStr r5 = NULL) {
     String data;
     return waitResponse(timeout_ms, data, r1, r2, r3, r4, r5);
   }
@@ -880,15 +879,18 @@ class TinyGsmSaraR4 : public TinyGsmModem<TinyGsmSaraR4>,
                       GsmConstStr r2 = GFP(GSM_ERROR),
 #if defined TINY_GSM_DEBUG
                       GsmConstStr r3 = GFP(GSM_CME_ERROR),
+                      GsmConstStr r4 = GFP(GSM_CMS_ERROR),
 #else
-                      GsmConstStr r3 = NULL,
+                      GsmConstStr r3 = NULL, GsmConstStr r4 = NULL,
 #endif
-                      GsmConstStr r4 = NULL, GsmConstStr r5 = NULL) {
+                      GsmConstStr r5 = NULL) {
     return waitResponse(1000, r1, r2, r3, r4, r5);
   }
 
+ public:
+  Stream& stream;
+
  protected:
-  Stream&          stream;
   GsmClientSaraR4* sockets[TINY_GSM_MUX_COUNT];
   const char*      gsmNL = GSM_NL;
   bool             has2GFallback;

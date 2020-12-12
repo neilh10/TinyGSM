@@ -30,6 +30,7 @@ static const char GSM_OK[] TINY_GSM_PROGMEM    = "OK" GSM_NL;
 static const char GSM_ERROR[] TINY_GSM_PROGMEM = "ERROR" GSM_NL;
 #if defined       TINY_GSM_DEBUG
 static const char GSM_CME_ERROR[] TINY_GSM_PROGMEM = GSM_NL "+CME ERROR:";
+static const char GSM_CMS_ERROR[] TINY_GSM_PROGMEM = GSM_NL "+CMS ERROR:";
 #endif
 
 enum RegStatus {
@@ -226,6 +227,9 @@ class TinyGsmM95 : public TinyGsmModem<TinyGsmM95>,
     return waitResponse() == 1;
   }
 
+  bool setPhoneFunctionalityImpl(uint8_t fun, bool reset = false)
+      TINY_GSM_ATTR_NOT_IMPLEMENTED;
+
   /*
    * Generic network functions
    */
@@ -387,7 +391,7 @@ class TinyGsmM95 : public TinyGsmModem<TinyGsmM95>,
    */
  protected:
   float getTemperatureImpl() {
-    sendAT(GF("+QTEMP"));
+    sendAT(GF("+QTEMP?"));
     if (waitResponse(GF(GSM_NL "+QTEMP:")) != 1) {
       return static_cast<float>(-9999);
     }
@@ -445,6 +449,7 @@ class TinyGsmM95 : public TinyGsmModem<TinyGsmM95>,
   }
 
   size_t modemRead(size_t size, uint8_t mux) {
+    if (!sockets[mux]) return 0;
     // TODO(?):  Does this work????
     // AT+QIRD=<id>,<sc>,<sid>,<len>
     // id = GPRS context number = 0, set in GPRS connect
@@ -482,6 +487,7 @@ class TinyGsmM95 : public TinyGsmModem<TinyGsmM95>,
     }
   }
 
+  // Not possible to check the number of characters remaining in buffer
   size_t modemGetAvailable(uint8_t) {
     return 0;
   }
@@ -515,10 +521,11 @@ class TinyGsmM95 : public TinyGsmModem<TinyGsmM95>,
                       GsmConstStr r2 = GFP(GSM_ERROR),
 #if defined TINY_GSM_DEBUG
                       GsmConstStr r3 = GFP(GSM_CME_ERROR),
+                      GsmConstStr r4 = GFP(GSM_CMS_ERROR),
 #else
-                      GsmConstStr r3 = NULL,
+                      GsmConstStr r3 = NULL, GsmConstStr r4 = NULL,
 #endif
-                      GsmConstStr r4 = NULL, GsmConstStr r5 = NULL) {
+                      GsmConstStr r5 = NULL) {
     /*String r1s(r1); r1s.trim();
     String r2s(r2); r2s.trim();
     String r3s(r3); r3s.trim();
@@ -597,10 +604,11 @@ class TinyGsmM95 : public TinyGsmModem<TinyGsmM95>,
                       GsmConstStr r2 = GFP(GSM_ERROR),
 #if defined TINY_GSM_DEBUG
                       GsmConstStr r3 = GFP(GSM_CME_ERROR),
+                      GsmConstStr r4 = GFP(GSM_CMS_ERROR),
 #else
-                      GsmConstStr r3 = NULL,
+                      GsmConstStr r3 = NULL, GsmConstStr r4 = NULL,
 #endif
-                      GsmConstStr r4 = NULL, GsmConstStr r5 = NULL) {
+                      GsmConstStr r5 = NULL) {
     String data;
     return waitResponse(timeout_ms, data, r1, r2, r3, r4, r5);
   }
@@ -609,15 +617,18 @@ class TinyGsmM95 : public TinyGsmModem<TinyGsmM95>,
                       GsmConstStr r2 = GFP(GSM_ERROR),
 #if defined TINY_GSM_DEBUG
                       GsmConstStr r3 = GFP(GSM_CME_ERROR),
+                      GsmConstStr r4 = GFP(GSM_CMS_ERROR),
 #else
-                      GsmConstStr r3 = NULL,
+                      GsmConstStr r3 = NULL, GsmConstStr r4 = NULL,
 #endif
-                      GsmConstStr r4 = NULL, GsmConstStr r5 = NULL) {
+                      GsmConstStr r5 = NULL) {
     return waitResponse(1000, r1, r2, r3, r4, r5);
   }
 
+ public:
+  Stream& stream;
+
  protected:
-  Stream&       stream;
   GsmClientM95* sockets[TINY_GSM_MUX_COUNT];
   const char*   gsmNL = GSM_NL;
 };
